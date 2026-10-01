@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Chippy Bird</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #1a202c;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Press Start 2P', system-ui, sans-serif;
+            touch-action: none; /* Prevent default touch actions like pull-to-refresh */
+        }
+
+        #game-container {
+            position: relative;
+            width: 100%;
+            max-width: 400px;
+            height: 100%;
+            max-height: 600px;
+            background-color: #70c5ce; /* Sky blue */
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+            overflow: hidden;
+            border-radius: 8px;
+        }
+        
+        @media (min-width: 450px) {
+            #game-container {
+                height: 90vh; /* Give it some breathing room on desktop */
+                border: 4px solid #fff;
+            }
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        .ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            pointer-events: none; /* Let clicks pass through to canvas container */
+            z-index: 10;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .text-outline {
+            color: white;
+            text-shadow: 
+                -2px -2px 0 #000,
+                 2px -2px 0 #000,
+                -2px  2px 0 #000,
+                 2px  2px 0 #000,
+                 0px  4px 0 #000;
+        }
+
+        .score-display {
+            position: absolute;
+            top: 20px;
+            width: 100%;
+            text-align: center;
+            font-size: 2.5rem;
+            z-index: 5;
+            pointer-events: none;
+        }
+
+        button {
+            pointer-events: auto; /* Buttons need to be clickable */
+            font-family: 'Press Start 2P', system-ui, sans-serif;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <canvas id="gameCanvas" width="400" height="600"></canvas>
+        
+        <div id="scoreDisplay" class="score-display text-outline">0</div>
+
+        <!-- Start Screen -->
+        <div id="startScreen" class="ui-overlay">
+            <h1 class="text-3xl text-outline mb-8 text-center leading-relaxed">CHIPPY BIRD</h1>
+            <p class="text-white text-sm animate-pulse mb-8" style="text-shadow: 1px 1px 0 #000;">Tap or Space to Jump</p>
+            <div class="flex gap-4">
+                <button id="startBtn" class="bg-green-500 hover:bg-green-400 text-white border-4 border-white rounded py-3 px-6 shadow-[0_4px_0_#000] active:translate-y-1 active:shadow-none transition-all">
+                    START
+                </button>
+            </div>
+        </div>
+
+        <!-- Game Over Screen -->
+        <div id="gameOverScreen" class="ui-overlay hidden bg-black/50 backdrop-blur-sm">
+            <h1 class="text-3xl text-outline mb-4 text-[#e74c3c]">GAME OVER</h1>
+            
+            <div class="bg-[#ded895] border-4 border-[#543847] rounded p-6 mb-8 text-center shadow-lg w-3/4 max-w-[300px]">
+                <p class="text-[#543847] text-sm mb-2">SCORE</p>
+                <p id="finalScore" class="text-2xl text-outline mb-4">0</p>
+                
+                <p class="text-[#543847] text-sm mb-2">BEST</p>
+                <p id="bestScore" class="text-2xl text-outline">0</p>
+            </div>
+
+            <button id="restartBtn" class="bg-blue-500 hover:bg-blue-400 text-white border-4 border-white rounded py-3 px-6 shadow-[0_4px_0_#000] active:translate-y-1 active:shadow-none transition-all">
+                PLAY AGAIN
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const container = document.getElementById('game-container');
+
+        // UI Elements
+        const scoreDisplay = document.getElementById('scoreDisplay');
+        const startScreen = document.getElementById('startScreen');
+        const gameOverScreen = document.getElementById('gameOverScreen');
+        const startBtn = document.getElementById('startBtn');
+        const restartBtn = document.getElementById('restartBtn');
+        const finalScoreEl = document.getElementById('finalScore');
+        const bestScoreEl = document.getElementById('bestScore');
+
+        const birdImg = new Image();
+        birdImg.src = 'https://mario.wiki.gallery/images/9/93/SMB_Cheep_Cheep_Artwork.png';
+
+        // Game Constants & Settings
+        const GRAVITY = 0.25;
+        const FLAP_STRENGTH = -5.5;
+        const PIPE_SPEED = 2.5;
+        const PIPE_WIDTH = 60;
+        const PIPE_GAP = 140;
+        const GROUND_HEIGHT = 100;
+        const BIRD_RADIUS = 18; // Adjusted visual radius for image size
+        const HITBOX_RADIUS = 14; // Adjusted for a balanced, forgiving hitbox
+        
+        // Responsive Canvas Setup
+        let GAME_WIDTH = 400;
+        let GAME_HEIGHT = 600;
+        let scaleRatio = 1;
+
+        function resize() {
+            // Keep internal resolution constant, scale CSS visual size
+            const rect = container.getBoundingClientRect();
+            scaleRatio = GAME_WIDTH / rect.width;
+            // The canvas handles its own scaling via CSS 100% w/h, but we keep track of ratio if needed for mouse/touch coordinates
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        let state = {
+            current: 'start', // 'start', 'playing', 'gameover'
+            score: 0,
+            bestScore: localStorage.getItem('chippyBest') || 0,
+            frames: 0
+        };
+
+        const bird = {
+            x: 100,
+            y: 250,
+            velocity: 0,
+            rotation: 0,
+            
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                
+                // Calculate rotation based on velocity
+                if (state.current === 'playing' || state.current === 'gameover') {
+                    this.rotation = Math.min(Math.PI / 4, Math.max(-Math.PI / 4, (this.velocity * 0.1)));
+                } else {
+                    // Hovering animation on start screen
+                    this.y = 250 + Math.sin(state.frames * 0.1) * 5;
+                    this.rotation = 0;
+                }
+                ctx.rotate(this.rotation);
+
+                // Draw the Cheep Cheep image
+                const imgSize = 40; // Size to fit nicely within the hitbox
+                if (birdImg.complete) {
+                    // Center the image on the x,y coordinates
+                    // Since the image points left natively but we move right, we can flip it horizontally
+                    ctx.scale(-1, 1);
+                    ctx.drawImage(birdImg, -imgSize / 2, -imgSize / 2, imgSize, imgSize);
+                } else {
+                    // Fallback red circle if image is still loading
+                    ctx.fillStyle = '#e62429';
+                    ctx.beginPath();
+                    ctx.arc(0, 0, BIRD_RADIUS, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                ctx.restore();
+            },
+            
+            update() {
+                if (state.current !== 'playing' && state.current !== 'gameover') return;
+
+                this.velocity += GRAVITY;
+                this.y += this.velocity;
+
+                // Floor collision checks happen in main loop, but prevent falling through ground
+                if (this.y + BIRD_RADIUS >= GAME_HEIGHT - GROUND_HEIGHT) {
+                    this.y = GAME_HEIGHT - GROUND_HEIGHT - BIRD_RADIUS;
+                    if (state.current === 'playing') {
+                        gameOver();
+                    }
+                }
+                
+                // Ceiling limit (can't fly infinitely high)
+                if (this.y - BIRD_RADIUS <= 0) {
+                    this.y = BIRD_RADIUS;
+                    this.velocity = 0;
+                }
+            },
+            
+            flap() {
+                if (this.y > 0) { // Can't flap if above the screen
+                    this.velocity = FLAP_STRENGTH;
+                }
+            },
+
+            reset() {
+                this.x = 100;
+                this.y = 250;
+                this.velocity = 0;
+                this.rotation = 0;
+            }
+        };
+
+        const pipes = {
+            items: [],
+            
+            draw() {
+                for (let i = 0; i < this.items.length; i++) {
+                    let p = this.items[i];
+                    
+                    // Main pipe colors
+                    ctx.fillStyle = '#73bf2e';
+                    ctx.strokeStyle = '#543847';
+                    ctx.lineWidth = 2;
+
+                    // Top pipe
+                    ctx.fillRect(p.x, 0, PIPE_WIDTH, p.top);
+                    ctx.strokeRect(p.x, 0, PIPE_WIDTH, p.top);
+                    // Top pipe cap
+                    ctx.fillRect(p.x - 2, p.top - 20, PIPE_WIDTH + 4, 20);
+                    ctx.strokeRect(p.x - 2, p.top - 20, PIPE_WIDTH + 4, 20);
+
+                    // Bottom pipe
+                    let bottomY = p.top + PIPE_GAP;
+                    let bottomHeight = GAME_HEIGHT - GROUND_HEIGHT - bottomY;
+                    ctx.fillRect(p.x, bottomY, PIPE_WIDTH, bottomHeight);
+                    ctx.strokeRect(p.x, bottomY, PIPE_WIDTH, bottomHeight);
+                    // Bottom pipe cap
+                    ctx.fillRect(p.x - 2, bottomY, PIPE_WIDTH + 4, 20);
+                    ctx.strokeRect(p.x - 2, bottomY, PIPE_WIDTH + 4, 20);
+                }
+            },
+            
+            update() {
+                if (state.current !== 'playing') return;
+
+                // Generate pipes every 100 frames
+                if (state.frames % 100 === 0) {
+                    // Randomize gap position
+                    // Min height for a pipe is 50, Max height is (Canvas - Ground - Gap - 50)
+                    let minPipeHeight = 50;
+                    let maxPipeHeight = GAME_HEIGHT - GROUND_HEIGHT - PIPE_GAP - minPipeHeight;
+                    let topPipeHeight = Math.floor(Math.random() * maxPipeHeight) + minPipeHeight;
+                    
+                    this.items.push({
+                        x: GAME_WIDTH,
+                        top: topPipeHeight,
+                        passed: false
+                    });
+                }
+
+                for (let i = 0; i < this.items.length; i++) {
+                    let p = this.items[i];
+                    p.x -= PIPE_SPEED;
+
+                    // Collision detection (Circle vs AABB)
+                    // We check collision against top pipe and bottom pipe
+                    
+                    // Helper to find closest point on rectangle to circle center
+                    let cx = bird.x;
+                    let cy = bird.y;
+
+                    // Top pipe bounds
+                    let topRx = p.x;
+                    let topRy = 0;
+                    let topRw = PIPE_WIDTH;
+                    let topRh = p.top;
+                    
+                    // Bottom pipe bounds
+                    let botRx = p.x;
+                    let botRy = p.top + PIPE_GAP;
+                    let botRw = PIPE_WIDTH;
+                    let botRh = GAME_HEIGHT - GROUND_HEIGHT - botRy;
+
+                    // Check Top Pipe Collision
+                    let testX = cx;
+                    let testY = cy;
+                    if (cx < topRx) testX = topRx;
+                    else if (cx > topRx + topRw) testX = topRx + topRw;
+                    if (cy < topRy) testY = topRy;
+                    else if (cy > topRy + topRh) testY = topRy + topRh;
+
+                    let distX = cx - testX;
+                    let distY = cy - testY;
+                    let distance = Math.sqrt((distX*distX) + (distY*distY));
+                    if (distance <= HITBOX_RADIUS) {
+                        gameOver();
+                    }
+
+                    // Check Bottom Pipe Collision
+                    testX = cx;
+                    testY = cy;
+                    if (cx < botRx) testX = botRx;
+                    else if (cx > botRx + botRw) testX = botRx + botRw;
+                    if (cy < botRy) testY = botRy;
+                    else if (cy > botRy + botRh) testY = botRy + botRh;
+
+                    distX = cx - testX;
+                    distY = cy - testY;
+                    distance = Math.sqrt((distX*distX) + (distY*distY));
+                    if (distance <= HITBOX_RADIUS) {
+                        gameOver();
+                    }
+
+                    // Update score
+                    if (p.x + PIPE_WIDTH < bird.x && !p.passed) {
+                        state.score++;
+                        scoreDisplay.innerText = state.score;
+                        p.passed = true;
+                    }
+
+                    // Remove pipes that are off screen
+                    if (p.x + PIPE_WIDTH < 0) {
+                        this.items.shift();
+                        i--; // Adjust index since array shifted
+                    }
+                }
+            },
+            
+            reset() {
+                this.items = [];
+            }
+        };
+
+        const ground = {
+            x: 0,
+            
+            draw() {
+                // Ground dirt
+                ctx.fillStyle = '#ded895';
+                ctx.fillRect(0, GAME_HEIGHT - GROUND_HEIGHT, GAME_WIDTH, GROUND_HEIGHT);
+                
+                // Ground grass top
+                ctx.fillStyle = '#73bf2e';
+                ctx.fillRect(0, GAME_HEIGHT - GROUND_HEIGHT, GAME_WIDTH, 20);
+                
+                // Border line
+                ctx.strokeStyle = '#543847';
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.moveTo(0, GAME_HEIGHT - GROUND_HEIGHT);
+                ctx.lineTo(GAME_WIDTH, GAME_HEIGHT - GROUND_HEIGHT);
+                ctx.stroke();
+
+                // Moving pattern
+                ctx.fillStyle = '#c7bc63'; // Darker dirt color for lines
+                for (let i = 0; i < GAME_WIDTH + 50; i += 30) {
+                    // Angled lines
+                    ctx.beginPath();
+                    ctx.moveTo(i - this.x + 10, GAME_HEIGHT - GROUND_HEIGHT + 30);
+                    ctx.lineTo(i - this.x - 10, GAME_HEIGHT - 20);
+                    ctx.lineTo(i - this.x - 5, GAME_HEIGHT - 20);
+                    ctx.lineTo(i - this.x + 15, GAME_HEIGHT - GROUND_HEIGHT + 30);
+                    ctx.fill();
+                }
+            },
+            
+            update() {
+                if (state.current === 'playing') {
+                    // Move ground left
+                    this.x = (this.x + PIPE_SPEED) % 30; // 30 is the spacing of the pattern
+                }
+            }
+        };
+
+        const background = {
+            draw() {
+                // Sky is handled by canvas container CSS, but we can draw some clouds
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+                
+                // Cloud 1
+                ctx.beginPath();
+                ctx.arc(100, 150, 20, 0, Math.PI*2);
+                ctx.arc(130, 140, 30, 0, Math.PI*2);
+                ctx.arc(160, 150, 25, 0, Math.PI*2);
+                ctx.fill();
+
+                // Cloud 2
+                ctx.beginPath();
+                ctx.arc(300, 100, 15, 0, Math.PI*2);
+                ctx.arc(320, 90, 25, 0, Math.PI*2);
+                ctx.arc(340, 100, 20, 0, Math.PI*2);
+                ctx.fill();
+                
+                // Static background silhouettes (City/Trees)
+                ctx.fillStyle = '#5cb2ba'; // Darker sky blue
+                
+                // Buildings
+                ctx.fillRect(20, GAME_HEIGHT - GROUND_HEIGHT - 60, 40, 60);
+                ctx.fillRect(65, GAME_HEIGHT - GROUND_HEIGHT - 80, 50, 80);
+                ctx.fillRect(250, GAME_HEIGHT - GROUND_HEIGHT - 50, 60, 50);
+                ctx.fillRect(320, GAME_HEIGHT - GROUND_HEIGHT - 100, 45, 100);
+            }
+        };
+
+        function startGame() {
+            state.current = 'playing';
+            state.score = 0;
+            state.frames = 0;
+            scoreDisplay.innerText = state.score;
+            scoreDisplay.classList.remove('hidden');
+            startScreen.classList.add('hidden');
+            gameOverScreen.classList.add('hidden');
+            bird.reset();
+            pipes.reset();
+            bird.flap();
+        }
+
+        function gameOver() {
+            state.current = 'gameover';
+            scoreDisplay.classList.add('hidden');
+            gameOverScreen.classList.remove('hidden');
+            
+            finalScoreEl.innerText = state.score;
+            
+            if (state.score > state.bestScore) {
+                state.bestScore = state.score;
+                localStorage.setItem('chippyBest', state.bestScore);
+            }
+            bestScoreEl.innerText = state.bestScore;
+        }
+
+        function handleInput(e) {
+            // Only handle left click (button 0) if it's a mouse event
+            if (e.type === 'mousedown' && e.button !== 0) return;
+            
+            // Prevent default behavior to stop double firing on touch devices and spacebar scrolling
+            if (e.type === 'keydown' && e.code === 'Space') {
+                e.preventDefault();
+            } else if (e.type === 'touchstart') {
+                e.preventDefault(); // Prevent double tap zoom, etc.
+            }
+            
+            // Avoid triggering when clicking buttons directly
+            if (e.target.tagName.toLowerCase() === 'button') {
+                return;
+            }
+
+            switch (state.current) {
+                case 'start':
+                    // handled by start button, but allow tap to start
+                    startGame();
+                    break;
+                case 'playing':
+                    bird.flap();
+                    break;
+                case 'gameover':
+                    // Do nothing on gameover screen taps to prevent accidental restarts. User must click button.
+                    break;
+            }
+        }
+
+        // Event Listeners
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                handleInput(e);
+            }
+        });
+        
+        // Touch/Mouse on container area
+        container.addEventListener('mousedown', handleInput);
+        container.addEventListener('touchstart', handleInput, { passive: false });
+
+        startBtn.addEventListener('click', startGame);
+        restartBtn.addEventListener('click', startGame);
+
+        function loop() {
+            // Clear Canvas
+            ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+
+            // Draw Background Elements
+            background.draw();
+
+            // Update & Draw Game Entities
+            pipes.update();
+            pipes.draw();
+
+            ground.update();
+            ground.draw();
+
+            bird.update();
+            bird.draw();
+
+            // Frame counter increment
+            if (state.current === 'playing') {
+                state.frames++;
+            }
+
+            requestAnimationFrame(loop);
+        }
+
+        // Start the game loop
+        requestAnimationFrame(loop);
+
+    </script>
+</body>
+</html>
